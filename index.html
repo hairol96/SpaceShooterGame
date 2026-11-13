@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Space Shooter</title>
+<style>
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: #0b0b16;
+    color: #eee;
+    font-family: 'Courier New', monospace;
+  }
+  canvas {
+    background: #050510;
+    border: 1px solid #2a2a4a;
+  }
+  .help { color: #888; margin: 0; }
+</style>
+</head>
+<body>
+<canvas id="game" width="480" height="640"></canvas>
+<p class="help">&larr; / &rarr; move &nbsp;·&nbsp; Space fire &nbsp;·&nbsp; Enter restart</p>
+<script>
+"use strict";
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;
+const H = canvas.height;
+
+// Classic 11x8 invader sprite, two animation frames.
+const SPRITES = [
+  [
+    "..X.....X..",
+    "...X...X...",
+    "..XXXXXXX..",
+    ".XX.XXX.XX.",
+    "XXXXXXXXXXX",
+    "X.XXXXXXX.X",
+    "X.X.....X.X",
+    "...XX.XX..."
+  ],
+  [
+    "..X.....X..",
+    "X..X...X..X",
+    "X.XXXXXXX.X",
+    "XXX.XXX.XXX",
+    "XXXXXXXXXXX",
+    ".XXXXXXXXX.",
+    "..X.....X..",
+    ".XX.....XX."
+  ]
+];
+const SPRITE_COLS = 11;
+const SPRITE_ROWS = 8;
+const PIXEL = 2;
+const ALIEN_W = SPRITE_COLS * PIXEL;
+const ALIEN_H = SPRITE_ROWS * PIXEL;
+
+const PLAYER_W = 30;
+const PLAYER_H = 20;
+const PLAYER_SPEED = 320;
+const BULLET_SPEED = 440;
+const FIRE_COOLDOWN = 0.3;
+const MAX_BULLETS = 4;
+const COLS = 8;
+const ROWS = 4;
+const CELL_X = 44;
+const CELL_Y = 32;
+
+const keys = {};
+window.addEventListener('keydown', (e) => {
+  if (['ArrowLeft', 'ArrowRight', ' ', 'Enter'].includes(e.key)) e.preventDefault();
+  keys[e.key] = true;
+});
+window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+const stars = [];
+for (let i = 0; i < 70; i++) {
+  stars.push({ x: Math.random() * W, y: Math.random() * H, speed: 10 + Math.random() * 30 });
+}
+
+let state, score, wave, lives, player, bullets, alienBullets, aliens;
+let alienDir, fireTimer, cooldown, invuln, elapsed;
+
+function spawnWave() {
+  aliens = [];
+  const totalW = (COLS - 1) * CELL_X + ALIEN_W;
+  const startX = (W - totalW) / 2;
+  const startY = 60;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      aliens.push({ x: startX + c * CELL_X, y: startY + r * CELL_Y, alive: true });
+    }
+  }
+  alienDir = 1;
+  fireTimer = 1.2;
+}
+
+function reset() {
+  score = 0;
+  wave = 1;
+  lives = 3;
+  player = { x: (W - PLAYER_W) / 2, y: H - 42 };
+  bullets = [];
+  alienBullets = [];
+  cooldown = 0;
+  invuln = 0;
+  elapsed = 0;
+  spawnWave();
+  state = 'playing';
+}
+
+function aliensAlive() {
+  return aliens.filter((a) => a.alive);
+}
+
+function alienSpeed() {
+  // Group speeds up as the wave is whittled down, and each wave starts faster.
+  return 30 + (COLS * ROWS - aliensAlive().length) * 4 + (wave - 1) * 15;
+}
+
+function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+function update(dt) {
+  elapsed += dt;
+
+  for (const s of stars) {
+    s.y += s.speed * dt;
+    if (s.y > H) { s.y = 0; s.x = Math.random() * W; }
+  }
+
+  if (state === 'gameover') {
+    if (keys['Enter']) reset();
+    return;
+  }
+
+  // Player movement.
+  if (keys['ArrowLeft']) player.x -= PLAYER_SPEED * dt;
+  if (keys['ArrowRight']) player.x += PLAYER_SPEED * dt;
+  player.x = Math.max(0, Math.min(W - PLAYER_W, player.x));
+
+  // Firing.
+  cooldown -= dt;
+  if (keys[' '] && cooldown <= 0 && bullets.length < MAX_BULLETS) {
+    bullets.push({ x: player.x + PLAYER_W / 2 - 1, y: player.y });
+    cooldown = FIRE_COOLDOWN;
+  }
+
+  // Player bullets.
+  for (const b of bullets) b.y -= BULLET_SPEED * dt;
+  bullets = bullets.filter((b) => b.y > -10);
+
+  // Alien group movement: slide sideways, drop and reverse at the edges.
+  const live = aliensAlive();
+  const speed = alienSpeed();
+  const minX = Math.min(...live.map((a) => a.x));
+  const maxX = Math.max(...live.map((a) => a.x + ALIEN_W));
+  if ((alienDir > 0 && maxX + speed * dt > W - 6) || (alienDir < 0 && minX - speed * dt < 6)) {
+    alienDir = -alienDir;
+    for (const a of live) a.y += 18;
+  } else {
+    for (const a of live) a.x += alienDir * speed * dt;
+  }
+
+  // Alien firing.
+  fireTimer -= dt;
+  if (fireTimer <= 0 && live.length > 0) {
+    const shooter = live[Math.floor(Math.random() * live.length)];
+    alienBullets.push({ x: shooter.x + ALIEN_W / 2 - 1, y: shooter.y + ALIEN_H });
+    fireTimer = 0.5 + Math.random() * (1.6 - Math.min(1, wave * 0.15));
+  }
+  for (const b of alienBullets) b.y += (180 + wave * 20) * dt;
+  alienBullets = alienBullets.filter((b) => b.y < H + 10);
+
+  // Bullet vs alien.
+  for (const b of bullets) {
+    for (const a of live) {
+      if (a.alive && rectsOverlap(b.x, b.y, 2, 10, a.x, a.y, ALIEN_W, ALIEN_H)) {
+        a.alive = false;
+        b.y = -100; // remove
+        score += 10;
+        break;
+      }
+    }
+  }
+  bullets = bullets.filter((b) => b.y > -50);
+
+  // Alien bullet vs player.
+  if (invuln > 0) invuln -= dt;
+  for (const b of alienBullets) {
+    if (invuln <= 0 && rectsOverlap(b.x, b.y, 2, 10, player.x, player.y, PLAYER_W, PLAYER_H)) {
+      b.y = H + 100; // remove
+      lives -= 1;
+      invuln = 1.5;
+      if (lives <= 0) state = 'gameover';
+    }
+  }
+  alienBullets = alienBullets.filter((b) => b.y < H + 50);
+
+  // Aliens reaching the player.
+  if (live.some((a) => a.y + ALIEN_H >= player.y)) state = 'gameover';
+
+  // Wave cleared.
+  if (live.length === 0) {
+    wave += 1;
+    spawnWave();
+  }
+}
+
+function drawShip(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x + w / 2, y);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x + w * 0.7, y + h * 0.75);
+  ctx.lineTo(x + w * 0.3, y + h * 0.75);
+  ctx.lineTo(x, y + h);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#aef';
+  ctx.fillRect(x + w / 2 - 2, y + h * 0.35, 4, 4);
+}
+
+function drawAlien(a, frame) {
+  const sprite = SPRITES[frame];
+  ctx.fillStyle = '#7dfa6d';
+  for (let r = 0; r < SPRITE_ROWS; r++) {
+    for (let c = 0; c < SPRITE_COLS; c++) {
+      if (sprite[r][c] === 'X') ctx.fillRect(a.x + c * PIXEL, a.y + r * PIXEL, PIXEL, PIXEL);
+    }
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.fillStyle = '#334';
+  for (const s of stars) ctx.fillRect(s.x, s.y, 2, 2);
+
+  const frame = ((Math.floor(elapsed * 3) % 2) + 2) % 2;
+  for (const a of aliens) if (a.alive) drawAlien(a, frame);
+
+  ctx.fillStyle = '#fff';
+  for (const b of bullets) ctx.fillRect(b.x, b.y, 2, 10);
+  ctx.fillStyle = '#ff5d5d';
+  for (const b of alienBullets) ctx.fillRect(b.x, b.y, 2, 10);
+
+  const flicker = invuln > 0 && Math.floor(elapsed * 12) % 2 === 0;
+  if (!flicker && state !== 'gameover') drawShip(player.x, player.y, PLAYER_W, PLAYER_H, '#4dd2ff');
+
+  // HUD
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px "Courier New", monospace';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.fillText('SCORE ' + score, 10, 10);
+  ctx.textAlign = 'center';
+  ctx.fillText('WAVE ' + wave, W / 2, 10);
+  for (let i = 0; i < lives; i++) {
+    drawShip(W - 30 - i * 32, 10, 20, 14, '#4dd2ff');
+  }
+
+  if (state === 'gameover') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 36px "Courier New", monospace';
+    ctx.fillText('GAME OVER', W / 2, H / 2 - 60);
+    ctx.font = '20px "Courier New", monospace';
+    ctx.fillText('Final score: ' + score, W / 2, H / 2 - 10);
+    ctx.fillStyle = '#9f9';
+    ctx.fillText('Press ENTER to restart', W / 2, H / 2 + 30);
+  }
+}
+
+let last = performance.now();
+function loop(now) {
+  // The first rAF timestamp can precede `last`, which would make dt negative.
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.05));
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
